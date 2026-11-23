@@ -36,7 +36,7 @@ function ModelEval() {
       <Card title="Verdict by horizon" sub={`Model ${q.data.version} · trained ${ago(q.data.trained_at)} on ${q.data.n_tickers} stocks · data to ${q.data.data_end}`} pad={false}>
         <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full">
-            <thead><tr>{["Horizon", "OOS predictions", "Period", "Base rate up", "Dir. accuracy", "Always-majority", "IC (t-stat)", "Brier skill", "80% / 90% coverage", "ML weight", "Verdict"].map((x) => <th key={x} className="th">{x}</th>)}</tr></thead>
+            <thead><tr>{["Horizon", "OOS predictions", "Period", "Base rate up", "Dir. accuracy", "Always-majority", "IC (t-stat)", "Brier skill", "80% / 90% coverage", "ML weight: avg in test / live", "Verdict"].map((x) => <th key={x} className="th">{x}</th>)}</tr></thead>
             <tbody>{H.filter((x) => q.data.metrics[x]).map((x) => {
               const r = q.data.metrics[x], e = r.models.ensemble;
               return (
@@ -45,7 +45,7 @@ function ModelEval() {
                   <td className="td">{pct(r.base_rate_up, 1, false)}</td><td className="td">{pct(e.directional_accuracy, 1, false)}</td><td className="td text-muted">{pct(r.always_majority_accuracy, 1, false)}</td>
                   <td className="td">{num(e.ic_mean, 3)} ({num(e.ic_tstat_overlap_adj, 1)})</td>
                   <td className={clsx("td", r.brier_skill_score > 0 ? "text-up" : "text-down")}>{num(r.brier_skill_score, 4)}</td>
-                  <td className="td">{pct(r.coverage_80, 1, false)} / {pct(r.coverage_90, 1, false)}</td><td className="td">{num(r.ml_weight_mean, 2)}</td>
+                  <td className="td">{pct(r.coverage_80, 1, false)} / {pct(r.coverage_90, 1, false)}</td><td className="td">{num(r.ml_weight_mean, 2)} / <b>{num(q.data.weights?.[x] ?? 0, 2)}</b></td>
                   <td className="td text-xs whitespace-normal min-w-[220px]">{r.verdict}</td>
                 </tr>
               );
