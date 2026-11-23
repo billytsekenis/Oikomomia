@@ -28,7 +28,11 @@ def _make_engine():
         @event.listens_for(eng, "connect")
         def _pragma(dbapi_conn, _):  # pragma: no cover - trivial
             cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA journal_mode=WAL")
+            # WAL is persistent in the file: only switch once (setting it on every connection takes a
+            # lock that stalls concurrent readers).
+            if str(cur.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+                cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=30000")
             cur.execute("PRAGMA synchronous=NORMAL")
             cur.execute("PRAGMA foreign_keys=ON")
             cur.close()

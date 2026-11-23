@@ -57,5 +57,8 @@ def test_walkforward_purging_and_no_skill_on_noise():
         assert o["date"].min() >= mf.index[0].replace(year=mf.index[0].year + model_engine.MIN_TRAIN_YEARS)
     m = res.metrics.get("30D")
     assert m is not None
-    ic = m["models"]["ensemble"]["ic_mean"]
-    assert abs(ic) < 0.06, f"spurious skill on pure noise: IC={ic}"
+    # the ML must not find (spurious) signal in pure noise, and must therefore get ~no weight
+    ml_t = m["models"]["ml"]["ic_tstat_overlap_adj"]
+    assert ml_t is None or abs(ml_t) < 2.5, f"spurious ML skill on noise: t={ml_t}"
+    assert m["ml_weight_mean"] < 0.05
+    assert res.weights.get("30D", 0) == 0.0

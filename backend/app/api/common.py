@@ -33,15 +33,46 @@ def clean(o: Any) -> Any:
     return o
 
 
-def memo(key: str, ttl: float, fn: Callable[[], Any]) -> Any:
+_refreshing: set[str] = set()
+_key_locks: dict[str, threading.Lock] = {}
+
+
+def memo(key: str, ttl: float, fn: Callable[[], Any], swr: bool = True) -> Any:
+    """TTL memo with stale-while-revalidate: an expired value is returned immediately while
+    a background thread recomputes it, so users never wait on a cold recomputation twice."""
     with _memo_lock:
         hit = _memo.get(key)
-    if hit and hit[0] > time.time():
+    now = time.time()
+    if hit and hit[0] > now:
         return hit[1]
-    val = fn()
+    if hit and swr:
+        with _memo_lock:
+            start = key not in _refreshing
+            _refreshing.add(key)
+        if start:
+            def work():
+                try:
+                    v = fn()
+                    with _memo_lock:
+                        _memo[key] = (time.time() + ttl, v)
+                except Exception:  # noqa: BLE001 - keep serving the stale value
+                    pass
+                finally:
+                    with _memo_lock:
+                        _refreshing.discard(key)
+            threading.Thread(target=work, daemon=True).start()
+        return hit[1]
     with _memo_lock:
-        _memo[key] = (time.time() + ttl, val)
-    return val
+        klock = _key_locks.setdefault(key, threading.Lock())
+    with klock:  # single-flight: concurrent cold callers wait for one computation
+        with _memo_lock:
+            hit = _memo.get(key)
+        if hit and hit[0] > time.time():
+            return hit[1]
+        val = fn()
+        with _memo_lock:
+            _memo[key] = (time.time() + ttl, val)
+        return val
 
 
 def clear_memo(prefix: str = "") -> None:

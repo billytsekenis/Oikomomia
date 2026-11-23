@@ -68,8 +68,6 @@ def job_train():
 def job_discovery():
     from .api.discovery_api import rebuild_snapshot
     snap = rebuild_snapshot()
-    from .api.common import clear_memo
-    clear_memo("")
     return {"rows": len(snap.get("rows", []))}
 
 
@@ -162,10 +160,37 @@ def job_system_strategy():
         return {"orders": len(orders), "targets": target}
 
 
+def job_provisional_bars():
+    """Append provisional bars for the last completed session where Nasdaq history lags."""
+    from .data import market as mkt
+    from .universe import UNIVERSE
+    n = 0
+    for t in list(UNIVERSE) + ["^IXIC", "^NDX"]:
+        try:
+            df = mkt.bars(t)
+            n += int(bool(df.attrs.get("provisional_last_bar")))
+        except Exception:  # noqa: BLE001
+            continue
+    from .analytics.context import _ub
+    _ub.clear()
+    return {"provisional": n}
+
+
+def job_warm_dashboard():
+    from .api import market_api
+    market_api.overview()
+    market_api.regime_payload()
+    market_api.sectors()
+    market_api.movers()
+    market_api.macro()
+    return {"ok": True}
+
+
 JOBS = {
     "train": job_train, "discovery": job_discovery, "log_predictions": job_log_predictions, "evaluate": job_evaluate,
     "paper_orders": job_paper_orders, "alerts": job_alerts, "equity_snapshot": job_equity_snapshot,
-    "system_strategy": job_system_strategy,
+    "system_strategy": job_system_strategy, "warm_dashboard": job_warm_dashboard,
+    "provisional_bars": job_provisional_bars,
 }
 
 
@@ -188,8 +213,12 @@ def status() -> dict:
 
 
 def _bootstrap():
-    """At start-up: train if no model, then build discovery, log & evaluate predictions."""
-    time.sleep(3)
+    """At start-up: warm dashboard caches, train if no model, then build discovery,
+    evaluate due predictions and log today's forecasts."""
+    time.sleep(2)
+    _record("warm_dashboard", job_warm_dashboard)
+    _record("provisional_bars", job_provisional_bars)
+    _record("warm_dashboard", job_warm_dashboard)
     if model_metrics() is None:
         _record("train", job_train)
         reset_cache()
@@ -207,9 +236,11 @@ def start():
     s = BackgroundScheduler(timezone="America/New_York", job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 3600})
     s.add_job(lambda: _record("paper_orders", job_paper_orders), "interval", minutes=1, id="paper_orders")
     s.add_job(lambda: _record("alerts", job_alerts), "interval", minutes=5, id="alerts")
+    s.add_job(lambda: _record("warm_dashboard", job_warm_dashboard), "interval", minutes=4, id="warm_dashboard")
     s.add_job(lambda: _record("discovery", job_discovery), CronTrigger(day_of_week="mon-fri", hour="9,12,17", minute=40), id="discovery")
     s.add_job(lambda: _record("evaluate", job_evaluate), CronTrigger(day_of_week="mon-fri", hour=18, minute=15), id="evaluate")
     s.add_job(lambda: _record("log_predictions", job_log_predictions), CronTrigger(day_of_week="mon-fri", hour=18, minute=30), id="log_predictions")
+    s.add_job(lambda: _record("provisional_bars", job_provisional_bars), CronTrigger(day_of_week="mon-fri", hour="16,17,19", minute=35), id="provisional_bars")
     s.add_job(lambda: _record("equity_snapshot", job_equity_snapshot), CronTrigger(day_of_week="mon-fri", hour=16, minute=45), id="equity_snapshot")
     s.add_job(lambda: _record("system_strategy", job_system_strategy), CronTrigger(day_of_week="mon", hour=10, minute=5), id="system_strategy")
     s.add_job(lambda: _record("train", job_train), CronTrigger(day_of_week="sat", hour=6, minute=0), id="train")

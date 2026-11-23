@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 246 246 244; --panel: 252 252 251; --panel2: 240 239 236; --line: 224 222 216;
+  --fg: 17 17 16; --muted: 98 97 92; --accent: 42 120 214;
+  --up: 13 128 88; --down: 214 58 58; --warn: 196 120 0;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --grid: rgba(0,0,0,0.07); --mid: #f0efec;
+  color-scheme: light;
+}
+.dark {
+  --bg: 12 14 18; --panel: 22 25 31; --panel2: 30 34 41; --line: 44 49 58;
+  --fg: 236 236 232; --muted: 150 152 156; --accent: 57 135 229;
+  --up: 34 190 135; --down: 236 98 98; --warn: 250 178 25;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
+  --grid: rgba(255,255,255,0.06); --mid: #383835;
+  color-scheme: dark;
+}
+html, body, #root { height: 100%; }
+body { @apply bg-bg text-fg font-sans antialiased; font-feature-settings: "tnum" 1, "cv11" 1; -webkit-tap-highlight-color: transparent; }
+.num { font-variant-numeric: tabular-nums; }
+.card { @apply bg-panel border border-line rounded-xl; }
+.btn { @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium border border-line bg-panel2 hover:bg-line/60 transition disabled:opacity-50 disabled:cursor-not-allowed; }
+.btn-primary { @apply btn bg-accent text-white border-transparent hover:bg-accent/90; }
+.input { @apply w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent/40; }
+.label { @apply text-xs text-muted mb-1 block; }
+.th { @apply text-left text-[11px] font-medium uppercase tracking-wide text-muted px-2 py-2 whitespace-nowrap; }
+.td { @apply px-2 py-1.5 text-sm whitespace-nowrap num; }
+.chip { @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs border border-line; }
+.skeleton { @apply animate-pulse rounded-md bg-line/60; }
+.scrollbar-thin::-webkit-scrollbar { height: 6px; width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgb(var(--line)); border-radius: 3px; }
+.prose-sm p { margin: 0.35rem 0; }
+.prose-sm ul { list-style: disc; padding-left: 1.1rem; margin: 0.25rem 0 0.6rem; }
+.prose-sm li { margin: 0.15rem 0; }
+.prose-sm strong { font-weight: 600; }
+.prose-sm h1, .prose-sm h2, .prose-sm h3 { font-weight: 600; margin: 0.6rem 0 0.2rem; }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }

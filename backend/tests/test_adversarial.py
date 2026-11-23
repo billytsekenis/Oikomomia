@@ -220,3 +220,8 @@ def test_llm_prompt_excludes_suspicious_news():
 ])
 def test_guard_patterns_multilingual(text, kind):
     assert kind in {f["type"] for f in guard.detect(text)}
+
+
+def test_greek_stress_question_word_order():
+    r = ask("Τι θα συμβεί στο χαρτοφυλάκιό μου εάν πέσει ο Nasdaq κατά 10%;")
+    assert "stress" in r["intents"] and r["language"] == "el"

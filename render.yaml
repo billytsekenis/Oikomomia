@@ -1,0 +1,28 @@
+# Render Blueprint - deploy from a phone: Render dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: oikonomia-terminal
+    runtime: docker
+    plan: standard           # 2 GB RAM (training peaks ~450 MB + server). For "starter" (512 MB) set TRAIN_MAX_TICKERS=50.
+    healthCheckPath: /api/health
+    disk:                    # persistent SQLite + model artefacts (remove this block and set DATABASE_URL to use Postgres instead)
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ENVIRONMENT
+        value: production
+      - key: SEC_USER_AGENT
+        sync: false          # REQUIRED by SEC: "Your Name your@email.com"
+      - key: ALLOW_REGISTRATION
+        value: "true"        # set to "false" after creating your account
+      - key: ANTHROPIC_API_KEY
+        sync: false          # optional: enables Claude narration in the AI analyst
+      - key: FRED_API_KEY
+        sync: false          # optional: official FRED API for macro series
+      - key: TRAIN_MAX_TICKERS
+        value: "105"

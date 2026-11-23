@@ -36,14 +36,15 @@ def markov_regime(spy: pd.DataFrame) -> dict:
             warnings.simplefilter("ignore")
             mod = MarkovRegression(w.values, k_regimes=2, trend="c", switching_variance=True)
             res = mod.fit(disp=False, maxiter=200)
-        sig = [float(res.params[f"sigma2[{i}]"]) for i in range(2)]
+        prm = dict(zip(mod.param_names, np.asarray(res.params)))
+        sig = [float(prm[f"sigma2[{i}]"]) for i in range(2)]
         hi = int(np.argmax(sig))
         p = res.filtered_marginal_probabilities
         p_hi = float(p[-1, hi]) if p.ndim == 2 else float(p[hi][-1])
-        const = [float(res.params[f"const[{i}]"]) for i in range(2)]
+        const = [float(prm[f"const[{i}]"]) for i in range(2)]
         return {"available": True, "p_high_vol_state": p_hi,
-                "states": {"low_vol": {"weekly_mean_pct": const[1 - hi], "weekly_vol_pct": np.sqrt(sig[1 - hi])},
-                           "high_vol": {"weekly_mean_pct": const[hi], "weekly_vol_pct": np.sqrt(sig[hi])}},
+                "states": {"low_vol": {"weekly_mean_pct": const[1 - hi], "weekly_vol_pct": float(np.sqrt(sig[1 - hi]))},
+                           "high_vol": {"weekly_mean_pct": const[hi], "weekly_vol_pct": float(np.sqrt(sig[hi]))}},
                 "n_weeks": int(len(w)), "method": "2-state Markov switching (mean & variance), weekly SPY log returns, ~10y"}
     except Exception as exc:  # noqa: BLE001
         log.info("markov regime failed: %s", exc)

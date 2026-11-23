@@ -82,6 +82,33 @@ def apply_platt(cal: tuple[float, float] | None, p):
     return 1 / (1 + np.exp(-z))
 
 
+MIN_W_TSTAT = 2.0
+
+
+def encompassing_weight(x: np.ndarray, e: np.ndarray, dates: np.ndarray, h_sessions: int) -> float:
+    """Forecast-encompassing weight of the ML residual forecast x for the prior's error e:
+    slope of e on x (no intercept), clipped to [0, 1]. The weight is set to 0 unless the slope
+    is statistically significant: standard errors are clustered by prediction date (stocks on
+    the same date are correlated) and inflated for overlapping horizons (h / 5-session step).
+    NOTE (disclosed): the significance requirement was added after inspecting a 12M forecast
+    in which an insignificant positive slope (IC t = 1.3) received weight 0.69."""
+    ok = np.isfinite(x) & np.isfinite(e)
+    x, e, dates = x[ok], e[ok], dates[ok]
+    if len(x) < MIN_W_ROWS:
+        return 0.0
+    sxx = float(np.dot(x, x))
+    if sxx <= 0:
+        return 0.0
+    b = float(np.dot(x, e)) / sxx
+    resid = e - b * x
+    g = pd.DataFrame({"d": dates, "s": x * resid}).groupby("d")["s"].sum().values
+    var = float(np.sum(g ** 2)) / sxx ** 2 * max(1.0, h_sessions / 5.0)
+    t = b / np.sqrt(var) if var > 0 else 0.0
+    if t < MIN_W_TSTAT:
+        return 0.0
+    return float(np.clip(b, 0.0, 1.0))
+
+
 def prepare_X(X: np.ndarray, dead: list[int]) -> np.ndarray:
     """Features that were entirely unavailable in training (e.g. VIX feed down) are set to a
     constant 0 - identically at training and inference - so they carry no information."""
@@ -307,11 +334,7 @@ def run_walkforward(bars: dict[str, pd.DataFrame], mf: pd.DataFrame, facts: dict
             if preds:
                 prev = pd.concat(preds)
                 prev = prev[(prev["tidx"] + n < fs_idx) & np.isfinite(prev["y"])]
-                if len(prev) >= MIN_W_ROWS:
-                    x = prev["ml"].values
-                    yy = (prev["y"] - prev["prior"]).values
-                    denom = float(np.dot(x, x))
-                    w = float(np.clip(np.dot(x, yy) / denom, 0, 1)) if denom > 0 else 0.0
+                w = encompassing_weight(prev["ml"].values, (prev["y"] - prev["prior"]).values, prev["date"].values, n)
             clim = float(np.mean(y_all[train] > 0))
             ens_t = prior[test] + w * 0.5 * (pr + pg)
             p_raw_t = 1 - norm.cdf(-ens_t / sigma[test])
@@ -343,8 +366,10 @@ def run_walkforward(bars: dict[str, pd.DataFrame], mf: pd.DataFrame, facts: dict
         oos["p_up"] = oos["p_cal"]
         oos["horizon"] = h
         realized = oos[np.isfinite(oos["y"])]
+        ml_ic_t = None
         if len(realized) > 100:
             result.metrics[h] = evaluate(realized, h, n)
+            ml_ic_t = result.metrics[h]["models"]["ml"]["ic_tstat_overlap_adj"]
             up = (realized["y"].values > 0).astype(float)
             b_raw = float(np.mean((realized["p_raw"].values - up) ** 2))
             result.metrics[h]["brier_uncalibrated"] = b_raw
@@ -354,11 +379,11 @@ def run_walkforward(bars: dict[str, pd.DataFrame], mf: pd.DataFrame, facts: dict
         if len(realized) >= MIN_CAL_ROWS and span_all >= MIN_CAL_PERIODS * n:
             result.calibrators[h] = fit_platt(realized["p_raw"].values, (realized["y"].values > 0).astype(int))
         # final weight on all realised OOS rows
-        x = (realized["ml"] - realized["prior"]).values
-        yy = (realized["y"] - realized["prior"]).values
-        denom = float(np.dot(x, x))
-        w_final = float(np.clip(np.dot(x, yy) / denom, 0, 1)) if denom > 0 and len(realized) >= MIN_W_ROWS else 0.0
-        result.weights[h] = w_final
+        w_final = encompassing_weight((realized["ml"] - realized["prior"]).values,
+                                      (realized["y"] - realized["prior"]).values, realized["date"].values, n)
+        # Live weight additionally requires the ML component's own out-of-sample rank IC to be
+        # significant (overlap-adjusted t > 2), consistent with the published skill verdicts.
+        result.weights[h] = w_final if (ml_ic_t is not None and ml_ic_t > MIN_W_TSTAT) else 0.0
         oos_frames.append(oos.drop(columns=["ridge_r", "gbm_r", "p_cal"]))
         # final models on all rows with realised targets (purged at the end of data)
         train = (tidx + n + EMBARGO <= last_tidx) & np.isfinite(resid)

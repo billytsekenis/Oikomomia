@@ -265,6 +265,17 @@ def session_bar(ticker: str) -> dict:
     lo = num(rng[0]) if len(rng) == 2 else None
     chart = _data(get_json(f"{BASE}/quote/{sym}/chart", params={"assetclass": cls})).get("chart") or []
     open_ = next((float(p["y"]) for p in chart if str((p.get("z") or {}).get("dateTime", "")).startswith("9:30 AM")), None)
+    if hi is None or lo is None:
+        # ETFs have no day range in the quote: use regular-session minute prices (approximate high/low)
+        def _mins(p):
+            m = re.match(r"(\d+):(\d+) (AM|PM)", str((p.get("z") or {}).get("dateTime", "")))
+            if not m:
+                return -1
+            h = int(m.group(1)) % 12 + (12 if m.group(3) == "PM" else 0)
+            return h * 60 + int(m.group(2))
+        reg = [float(p["y"]) for p in chart if 570 <= _mins(p) <= 960 and p.get("y") is not None]
+        if reg:
+            hi, lo = max(reg), min(reg)
     if close is None or open_ is None or hi is None or lo is None:
         raise ProviderError("incomplete session data")
     hi, lo = max(hi, open_, close), min(lo, open_, close)

@@ -239,7 +239,13 @@ def _load_db(ticker: str) -> tuple[pd.DataFrame | None, SeriesMeta | None]:
 def _save_db(ticker: str, df: pd.DataFrame, meta: dict, error: str = "") -> None:
     now = utcnow()
     with SessionLocal() as db:
+        keep = db.execute(select(PriceBar).where(PriceBar.ticker == ticker, PriceBar.date > df.index[-1],
+                                                 PriceBar.source.like("%provisional%"))).scalars().all()
+        keep = [{c: getattr(r, c) for c in ("ticker", "date", "open", "high", "low", "close", "adj_close", "volume", "source", "fetched_at")}
+                for r in keep]
         db.execute(delete(PriceBar).where(PriceBar.ticker == ticker))
+        if keep:
+            db.bulk_insert_mappings(PriceBar, keep)
         db.bulk_insert_mappings(PriceBar, [
             {"ticker": ticker, "date": d, "open": float(r.open), "high": float(r.high), "low": float(r.low),
              "close": float(r.close), "adj_close": float(r.adj_close), "volume": float(r.volume or 0),
@@ -249,7 +255,8 @@ def _save_db(ticker: str, df: pd.DataFrame, meta: dict, error: str = "") -> None
         sm = db.get(SeriesMeta, ticker) or SeriesMeta(ticker=ticker)
         sm.source = meta["source"][:120]
         sm.adjusted = (meta.get("adjusted", "") + (f" | proxy:{meta['proxy']}" if meta.get("proxy") else ""))[:160]
-        sm.first_date, sm.last_date = df.index[0], df.index[-1]
+        sm.first_date = df.index[0]
+        sm.last_date = max([df.index[-1]] + [k["date"] for k in keep])
         sm.fetched_at = now
         sm.error = error
         db.merge(sm)
@@ -266,10 +273,12 @@ def _needs_refresh(meta: SeriesMeta | None) -> bool:
     age = utcnow() - meta.fetched_at
     if age > timedelta(hours=12):
         return True
-    return meta.last_date < last_completed_session() and age > timedelta(hours=1)
+    # Nasdaq history publishes the latest session late; provisional bars cover the gap, so
+    # retry the official history at most every 3 hours instead of on every request.
+    return meta.last_date < last_completed_session() and age > timedelta(hours=3)
 
 
-def bars(ticker: str, years: int | None = None, force: bool = False) -> pd.DataFrame:
+def bars(ticker: str, years: int | None = None, force: bool = False, provisional: bool = True) -> pd.DataFrame:
     """Daily bars with provenance in df.attrs. Raises ProviderError if no data at all."""
     ticker = ticker.upper()
     years = years or get_settings().history_years
@@ -291,7 +300,8 @@ def bars(ticker: str, years: int | None = None, force: bool = False) -> pd.DataF
                 df.attrs["error"] = str(exc)
         if df is None:
             raise ProviderError(f"No data for {ticker}")
-        df = _maybe_append_session(ticker, df, meta)
+        if provisional:
+            df = _maybe_append_session(ticker, df, meta)
         full = _meta_full.get(ticker, {})
         df.attrs.update({
             "ticker": ticker,
@@ -330,6 +340,9 @@ def _maybe_append_session(ticker: str, df: pd.DataFrame, meta: SeriesMeta | None
     with SessionLocal() as db:
         db.merge(PriceBar(ticker=ticker, date=b["date"], open=b["open"], high=b["high"], low=b["low"], close=b["close"],
                           adj_close=b["close"] * ratio, volume=b["volume"], source="Nasdaq quote (provisional)", fetched_at=utcnow()))
+        sm = db.get(SeriesMeta, ticker)
+        if sm is not None and (sm.last_date is None or sm.last_date < b["date"]):
+            sm.last_date = b["date"]
         db.commit()
     row = pd.DataFrame([{**{k: b[k] for k in ("open", "high", "low", "close", "volume")}, "adj_close": b["close"] * ratio}],
                        index=pd.Index([b["date"]], name="date"))
@@ -344,16 +357,27 @@ def bars_many(tickers: list[str], years: int | None = None, workers: int = 4) ->
 
     def one(t):
         try:
-            return t, bars(t, years)
+            return t, bars(t, years, provisional=False)
         except ProviderError as exc:
             log.warning("bars failed for %s: %s", t, exc)
             return t, None
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for t, df in ex.map(one, tickers):
-            if df is not None and len(df) > 0:
-                out[t] = df
-    return out
+    # Fresh series are pure local DB reads, which are much faster serially (threads contend
+    # heavily in SQLite/SQLAlchemy row materialisation); only network refreshes use the pool.
+    with SessionLocal() as db:
+        metas = {m.ticker: m for m in db.execute(select(SeriesMeta).where(SeriesMeta.ticker.in_(tickers))).scalars()}
+    local = [t for t in tickers if not _needs_refresh(metas.get(t))]
+    remote = [t for t in tickers if t not in set(local)]
+    for t in local:
+        _, df = one(t)
+        if df is not None and len(df) > 0:
+            out[t] = df
+    if remote:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for t, df in ex.map(one, remote):
+                if df is not None and len(df) > 0:
+                    out[t] = df
+    return {t: out[t] for t in tickers if t in out}
 
 
 def _is_provisional(ticker: str, d) -> bool:

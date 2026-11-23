@@ -38,7 +38,7 @@ def tracked_tickers() -> list[str]:
 
 
 def log_predictions(db: Session, tickers: list[str] | None = None, n_paths: int = 2000) -> dict:
-    written = skipped = failed = 0
+    written = skipped = failed = stale = 0
     for t in tickers or tracked_tickers():
         try:
             fc = forecast(t, n_paths=n_paths, include_paths=False)
@@ -50,6 +50,11 @@ def log_predictions(db: Session, tickers: list[str] | None = None, n_paths: int 
             failed += 1
             continue
         as_of = date.fromisoformat(fc["as_of"])
+        if as_of < last_completed_session():
+            # The data lags the last completed session: a forecast logged now would be made after
+            # an outcome it targets was already knowable. Skip rather than pollute the record.
+            stale += 1
+            continue
         for h in fc["horizons"]:
             exists = db.scalar(select(func.count(PredictionRecord.id)).where(
                 PredictionRecord.ticker == t, PredictionRecord.as_of_date == as_of,
@@ -72,7 +77,7 @@ def log_predictions(db: Session, tickers: list[str] | None = None, n_paths: int 
             except IntegrityError:
                 db.rollback()
                 skipped += 1
-    return {"written": written, "skipped_existing": skipped, "failed": failed}
+    return {"written": written, "skipped_existing": skipped, "failed": failed, "skipped_stale_data": stale}
 
 
 def evaluate_due(db: Session) -> dict:
