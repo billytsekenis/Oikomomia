@@ -27,7 +27,7 @@ import logging
 import pickle
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -80,6 +80,15 @@ def apply_platt(cal: tuple[float, float] | None, p):
     p = np.clip(np.asarray(p, dtype=float), 1e-4, 1 - 1e-4)
     z = a + b * np.log(p / (1 - p))
     return 1 / (1 + np.exp(-z))
+
+
+def prepare_X(X: np.ndarray, dead: list[int]) -> np.ndarray:
+    """Features that were entirely unavailable in training (e.g. VIX feed down) are set to a
+    constant 0 - identically at training and inference - so they carry no information."""
+    X = np.array(X, dtype=float, copy=True)
+    if dead:
+        X[:, dead] = 0.0
+    return X
 
 
 def make_ridge():
@@ -233,6 +242,7 @@ class TrainResult:
     oos: pd.DataFrame | None = None
     final_models: dict = field(default_factory=dict)
     calibrators: dict = field(default_factory=dict)
+    dead_features: list = field(default_factory=list)
     reference: pd.DataFrame | None = None
     seconds: float = 0.0
 
@@ -262,8 +272,11 @@ def run_walkforward(bars: dict[str, pd.DataFrame], mf: pd.DataFrame, facts: dict
     test_dates = dates[dates >= first_test]
     fold_starts = test_dates[::REFIT_EVERY]
     X_all = ranked[ALL_FEATURES].astype(float).values
-    result = TrainResult(MODEL_VERSION, datetime.utcnow().isoformat() + "Z", str(mf.index[-1]),
-                         sorted(bars), HYPERPARAMS)
+    dead = [i for i in range(X_all.shape[1]) if not np.isfinite(X_all[:, i]).any()]
+    X_all = prepare_X(X_all, dead)
+    result = TrainResult(MODEL_VERSION, datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
+                         str(mf.index[-1]), sorted(bars), HYPERPARAMS)
+    result.dead_features = [ALL_FEATURES[i] for i in dead]
     oos_frames = []
     n_steps = len(HORIZONS) * (len(fold_starts) + 1)
     done = 0

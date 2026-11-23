@@ -70,7 +70,8 @@ def forecast(ticker: str, n_paths: int | None = None, include_paths: bool = True
         w = 0.0
         mu = prior
         if ml_ok and h in art["final_models"]:
-            X = feat[ALL_FEATURES].astype(float).values
+            X = model_engine.prepare_X(feat[ALL_FEATURES].astype(float).values,
+                                          [ALL_FEATURES.index(c) for c in art.get("dead_features", [])])
             r = float(art["final_models"][h]["ridge"].predict(X)[0])
             g = float(art["final_models"][h]["gbm"].predict(X)[0])
             comp["ridge"] = prior + r

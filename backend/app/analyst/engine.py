@@ -312,7 +312,8 @@ class Analyst:
             a.add(T(lang, "Excluded content", "Αποκλεισμένο περιεχόμενο"), [T(lang,
                   f"{len(sus)} news item(s) contained instruction-like text (possible prompt injection) and were ignored.",
                   f"{len(sus)} είδηση(-εις) περιείχαν κείμενο τύπου εντολής (πιθανή prompt injection) και αγνοήθηκαν.")])
-            a.flags.append({"type": "external_injection_blocked", "match": sus[0]["title"][:80]})
+            # never copy the offending text anywhere (it would reach the LLM prompt)
+            a.flags.append({"type": "external_injection_blocked", "match": f"{len(sus)} news item(s) excluded"})
         a.add(T(lang, "Neutral / context", "Ουδέτερα στοιχεία"), neutral)
         a.add(T(lang, f"Case FOR {t}", f"Υπέρ {t}"), pros or [T(lang, "No strong supporting evidence in the data.", "Δεν υπάρχουν ισχυρά στοιχεία υπέρ.")])
         a.add(T(lang, f"Case AGAINST {t}", f"Κατά {t}"), cons or [T(lang, "No strong negative evidence in the data; unknown risks remain.", "Δεν υπάρχουν ισχυρά αρνητικά στοιχεία· άγνωστοι κίνδυνοι παραμένουν.")])

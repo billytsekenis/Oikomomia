@@ -174,16 +174,10 @@ def unsupported_numbers(answer: str, evidence, extra_allowed: set[float] | None 
             continue
         if 1900 <= v <= 2100 and float(v).is_integer():  # years
             continue
-        ok = False
-        for c in candidates:
-            for d in (0, 1, 2):
-                if round(c, d) in allowed:
-                    ok = True
-                    break
-            if not ok and any(abs(c - a) <= max(0.006 * abs(a), 0.051) for a in allowed if abs(a) > 0):
-                ok = True
-            if ok:
-                break
+        # `allowed` already holds each evidence value rounded to 0/1/2 decimals (and x100 for
+        # fractions), so a correctly rounded quote of the evidence matches exactly; only a tiny
+        # relative tolerance is allowed for float noise. The candidate itself is never rounded.
+        ok = any(c in allowed or any(abs(c - a) <= 0.005 * abs(a) for a in allowed if a) for c in candidates)
         if not ok:
             bad.append(raw)
     return bad

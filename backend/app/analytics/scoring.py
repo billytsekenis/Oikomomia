@@ -139,7 +139,8 @@ def stock_row(t: str, ctx: dict, art: dict | None, weights: dict, earn_map: dict
             s = float(vm.horizon_sigma(n))
             mu = float(model_engine.prior_mu(np.array([rf]), np.array([beta or 1.0]), np.array([s]), n)[0])
             if ml_ok and h in art["final_models"]:
-                X = feat[ALL_FEATURES].astype(float).values
+                X = model_engine.prepare_X(feat[ALL_FEATURES].astype(float).values,
+                                          [ALL_FEATURES.index(c) for c in art.get("dead_features", [])])
                 ml = 0.5 * (art["final_models"][h]["ridge"].predict(X)[0] + art["final_models"][h]["gbm"].predict(X)[0])
                 mu += float(art["weights"].get(h, 0)) * float(ml)
             fc[h] = {"mu": mu, "sigma": s, "p_up": float(1 - norm.cdf(-mu / s)), "exp_ret": float(math.exp(mu + s * s / 2) - 1)}

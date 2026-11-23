@@ -74,7 +74,7 @@ def save_model(res: model_engine.TrainResult) -> None:
             oos[c] = oos[c].astype("float32")
     art = {"version": res.version, "trained_at": res.trained_at, "data_end": res.data_end, "tickers": res.tickers,
            "hyperparams": res.hyperparams, "weights": res.weights, "final_models": res.final_models,
-           "calibrators": res.calibrators,
+           "calibrators": res.calibrators, "dead_features": res.dead_features,
            "reference": res.reference, "oos": oos, "seconds": res.seconds}
     blob = model_engine.pack(art)
     (MODEL_DIR / "latest.b64").write_text(blob)
