@@ -43,7 +43,7 @@ from .features import ALL_FEATURES, HORIZONS, STOCK_FEATURES, build_panel, cross
 
 log = logging.getLogger("oik.model")
 
-MODEL_VERSION = "ens-1.0"
+MODEL_VERSION = "ens-1.1"  # 1.1 = significance-gated ensemble weights (see encompassing_weight)
 ERP = 0.05
 EMBARGO = 5
 REFIT_EVERY = 26          # weekly steps (~6 months)

@@ -69,7 +69,8 @@ def log_predictions(db: Session, tickers: list[str] | None = None, n_paths: int 
                 price_at_prediction=fc["price"], price_source=(fc["provenance"].get("source") or "")[:40],
                 expected_return=h["expected_return"], median_return=h["median_return"], p_up=h["p_up"],
                 q05=q["q05"], q10=q["q10"], q50=q["q50"], q90=q["q90"], q95=q["q95"], sigma=h["sigma"],
-                details={"skill": h["skill"], "ml_weight": h["ml_weight"], "components": h["components"]})
+                details={"skill": h["skill"], "ml_weight": h["ml_weight"], "components": h["components"],
+                         "model_trained_at": fc.get("model_trained_at")})
             db.add(rec)
             try:
                 db.commit()
