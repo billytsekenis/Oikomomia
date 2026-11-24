@@ -6,5 +6,6 @@ Requires a running server with a registered user (`E2E_EMAIL` / `E2E_PASSWORD`, 
 npm i -D playwright          # or use a global Playwright install
 node flows.js                # 22 user journeys, desktop + iPhone 13; writes screenshots to docs/screenshots
 node mobile_overflow.js      # checks every page for horizontal overflow at iPhone width
+node revolut.js              # Revolut statement import + Revolut-fee paper account (iPhone emulation)
 ```
 `BASE_URL` overrides the target (default `http://localhost:8000`).

@@ -18,8 +18,13 @@ router = APIRouter(prefix="/api/paper", tags=["paper"])
 class AccountIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     initial_cash: float = Field(default=100_000, gt=0, le=1e9)
+    preset: str | None = None
+    fee_model: str = "per_share"
     commission_per_share: float = Field(default=0.005, ge=0)
+    commission_pct: float = Field(default=0.0, ge=0, le=0.05)
     min_commission: float = Field(default=1.0, ge=0)
+    free_trades_per_month: int = Field(default=0, ge=0, le=1000)
+    fx_fee_pct: float = Field(default=0.0, ge=0, le=0.05)
 
 
 class OrderIn(BaseModel):
@@ -51,11 +56,31 @@ def accounts(user: User = Depends(get_current_user), db: Session = Depends(get_d
 
 @router.post("/accounts")
 def create_account(body: AccountIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    cfg = body.model_dump()
+    profile = ""
+    if body.preset:
+        pre = next((p for p in paper.FEE_PRESETS if p["id"] == body.preset), None)
+        if pre is None:
+            raise HTTPException(400, "unknown preset")
+        profile = pre["label"]
+        for k, v in pre.items():
+            if k not in ("id", "label") and k not in body.model_fields_set:
+                cfg[k] = v
+    if cfg["fee_model"] not in ("per_share", "pct"):
+        raise HTTPException(400, "fee_model must be per_share or pct")
     a = PaperAccount(user_id=user.id, name=body.name, initial_cash=body.initial_cash, cash=body.initial_cash,
-                     commission_per_share=body.commission_per_share, min_commission=body.min_commission)
+                     commission_per_share=cfg["commission_per_share"], min_commission=cfg["min_commission"],
+                     fee_model=cfg["fee_model"], commission_pct=cfg["commission_pct"],
+                     free_trades_per_month=cfg["free_trades_per_month"], fx_fee_pct=cfg["fx_fee_pct"],
+                     fee_profile=profile or ("custom" if cfg["fee_model"] == "pct" else ""))
     db.add(a)
     db.commit()
     return {"id": a.id}
+
+
+@router.get("/fee-presets")
+def fee_presets(_: User = Depends(get_current_user)):
+    return {"presets": paper.FEE_PRESETS, "note": paper.FEE_PRESET_NOTE}
 
 
 @router.get("/accounts/{aid}")

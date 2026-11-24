@@ -3,7 +3,7 @@ services:
   - type: web
     name: oikonomia-terminal
     runtime: docker
-    plan: standard           # 2 GB RAM (training peaks ~450 MB + server). For "starter" (512 MB) set TRAIN_MAX_TICKERS=50.
+    plan: 1c-2g              # 1 CPU / 2 GB RAM (Render plan ID since Aug 2026; formerly "standard"). Training peaks ~450 MB.
     healthCheckPath: /api/health
     disk:                    # persistent SQLite + model artefacts (remove this block and set DATABASE_URL to use Postgres instead)
       name: data

@@ -1,0 +1,32 @@
+// Revolut journeys on an emulated iPhone: statement import (preview -> import -> analytics) and a Revolut-fee paper account.
+const { chromium, devices } = require('playwright');
+const path = require('path');
+const base = process.env.BASE_URL || 'http://localhost:8000';
+const CSV = process.env.REVOLUT_CSV || path.join(__dirname, 'revolut_statement.csv');
+(async () => {
+  const b = await chromium.launch(); const ctx = await b.newContext({ ...devices['iPhone 13'] }); const p = await ctx.newPage();
+  const errors = []; p.on('pageerror', e => errors.push(e.message));
+  const email = `rev${Date.now()}@example.com`;
+  await p.goto(base + '/');
+  await p.click('text=No account? Register').catch(() => {});
+  await p.fill('#email', email); await p.fill('#pw', 'password123'); await p.click('button:has-text("Create account")');
+  await p.waitForSelector('h1:has-text("Market intelligence")', { timeout: 60000 });
+  await p.goto(base + '/portfolio'); await p.waitForSelector('text=Import from Revolut', { timeout: 30000 });
+  await p.setInputFiles('input[type=file]', CSV);
+  await p.waitForSelector('text=/Import \\d+ transaction/', { timeout: 60000 });
+  const counts = await p.locator('text=/\\d+ (new|duplicate|skipped|error)/').allInnerTexts();
+  await p.screenshot({ path: path.join(__dirname, '..', 'docs', 'screenshots', 'mobile-revolut-preview.png') });
+  await p.click('button:has-text("Import")');
+  await p.waitForSelector('text=/Imported \\d+ transaction/', { timeout: 60000 });
+  await p.waitForSelector('text=Holdings', { timeout: 120000 });
+  const nvdaQty = await p.locator('tr:has(a:text-is("NVDA")) td').nth(1).innerText();
+  const divs = await p.locator('text=Dividends').first().locator('xpath=..').innerText();
+  await p.goto(base + '/paper'); await p.waitForSelector('text=Order ticket', { timeout: 30000 });
+  const feeLine = await p.locator('text=/Fees:/').innerText();
+  await p.click('button:has-text("New account")'); await p.waitForSelector('text=New paper account');
+  await p.selectOption('select:near(:text("Fee profile"))', 'revolut-plus');
+  await p.click('button:has-text("Create")'); await p.waitForTimeout(1500);
+  const accounts = await p.locator('select[aria-label=Account] option').allInnerTexts();
+  console.log(JSON.stringify({ counts, nvdaQty, divs: divs.replace(/\n/g, ' '), feeLine, accounts, errors }, null, 1));
+  await b.close();
+})();

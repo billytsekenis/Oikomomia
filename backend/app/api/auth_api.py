@@ -53,7 +53,9 @@ def register(body: Credentials, resp: Response, db: Session = Depends(get_db)):
     for t in ("AAPL", "MSFT", "NVDA", "SPY"):
         db.add(WatchlistItem(watchlist_id=wl.id, ticker=t))
     db.add(Portfolio(user_id=u.id, name="Main portfolio", base_currency="EUR"))
-    db.add(PaperAccount(user_id=u.id, name="Paper account", initial_cash=100_000, cash=100_000))
+    db.add(PaperAccount(user_id=u.id, name="Paper account (Revolut Standard fees)", initial_cash=100_000, cash=100_000,
+                        fee_model="pct", commission_pct=0.0025, min_commission=1.0, free_trades_per_month=1,
+                        fx_fee_pct=0.0, fee_profile="Revolut Standard"))
     db.commit()
     tok = create_token(u.id)
     _set_cookie(resp, tok)

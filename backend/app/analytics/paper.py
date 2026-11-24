@@ -86,7 +86,37 @@ def slippage_bps(notional: float, adv: float | None) -> float:
     return float(min(50.0, 1.0 + 10.0 * math.sqrt(notional / adv)))
 
 
-def commission(acct: PaperAccount, qty: float) -> float:
+FEE_PRESETS = [
+    {"id": "revolut-standard", "label": "Revolut Standard", "fee_model": "pct", "commission_pct": 0.0025, "min_commission": 1.0, "free_trades_per_month": 1, "fx_fee_pct": 0.0},
+    {"id": "revolut-plus", "label": "Revolut Plus", "fee_model": "pct", "commission_pct": 0.0025, "min_commission": 1.0, "free_trades_per_month": 3, "fx_fee_pct": 0.0},
+    {"id": "revolut-premium", "label": "Revolut Premium", "fee_model": "pct", "commission_pct": 0.0025, "min_commission": 1.0, "free_trades_per_month": 5, "fx_fee_pct": 0.0},
+    {"id": "revolut-metal", "label": "Revolut Metal", "fee_model": "pct", "commission_pct": 0.0025, "min_commission": 1.0, "free_trades_per_month": 10, "fx_fee_pct": 0.0},
+    {"id": "revolut-ultra", "label": "Revolut Ultra", "fee_model": "pct", "commission_pct": 0.0012, "min_commission": 1.0, "free_trades_per_month": 10, "fx_fee_pct": 0.0},
+    {"id": "per-share", "label": "US broker ($0.005/share, $1 min)", "fee_model": "per_share", "commission_per_share": 0.005, "min_commission": 1.0, "free_trades_per_month": 0, "fx_fee_pct": 0.0},
+]
+FEE_PRESET_NOTE = ("Revolut presets follow Revolut's EEA trading-fee disclosures as found in Nov 2026: outside the monthly "
+                   "commission-free allowance (1 / 3 / 5 / 10 / 10 orders for Standard / Plus / Premium / Metal / Ultra) the fee is "
+                   "the greater of 0.25% of the order amount (0.12% on Ultra) and a minimum of about EUR 1 (applied here as 1 unit of "
+                   "the account currency). Fees differ by country and plan and change over time - check the fee schedule in your "
+                   "Revolut app. Currency-conversion (EUR->USD) costs depend on your plan and on weekends: set 'FX fee %' yourself. "
+                   "SEC/FINRA regulatory fees on sells are not modelled.")
+
+
+def trades_this_month(db: Session | None, acct: PaperAccount, now: datetime | None = None) -> int:
+    """Executed orders in the current calendar month (approximates Revolut's billing-cycle order count)."""
+    if db is None or acct.id is None:
+        return 0
+    now = now or datetime.now(timezone.utc)
+    start = datetime(now.year, now.month, 1)
+    return db.query(PaperTrade).filter(PaperTrade.account_id == acct.id, PaperTrade.executed_at >= start).count()
+
+
+def commission(acct: PaperAccount, qty: float, notional: float = 0.0, db: Session | None = None) -> float:
+    if (acct.fee_model or "per_share") == "pct":
+        fx_cost = (acct.fx_fee_pct or 0.0) * notional
+        if trades_this_month(db, acct) < (acct.free_trades_per_month or 0):
+            return fx_cost
+        return max(acct.min_commission or 0.0, (acct.commission_pct or 0.0) * notional) + fx_cost
     return max(acct.min_commission, acct.commission_per_share * qty)
 
 
@@ -120,7 +150,7 @@ def place_order(db: Session, acct: PaperAccount, ticker: str, side: str, order_t
             raise OrderError("Insufficient shares (short selling is not supported)")
     else:
         ref = limit_price if order_type in ("limit", "stop_limit") else max(q["ask"], stop_price or 0)
-        est = quantity * ref * (1 + slippage_bps(quantity * ref, q["adv_usd"]) / 1e4) + commission(acct, quantity)
+        est = quantity * ref * (1 + slippage_bps(quantity * ref, q["adv_usd"]) / 1e4) + commission(acct, quantity, quantity * ref, db)
         if est > acct.cash + 1e-6:
             raise OrderError(f"Insufficient cash: estimated cost ${est:,.2f} > available ${acct.cash:,.2f}")
         if stop_loss is not None and stop_loss >= q["price"]:
@@ -145,7 +175,7 @@ def _fill(db: Session, o: PaperOrder, ref_px: float, q: dict, reason: str) -> No
     px = ref_px * (1 + slip / 1e4) if o.side == "BUY" else ref_px * (1 - slip / 1e4)
     if o.order_type in ("limit", "stop_limit") and o.limit_price:
         px = min(px, o.limit_price) if o.side == "BUY" else max(px, o.limit_price)
-    fee = commission(acct, o.quantity)
+    fee = commission(acct, o.quantity, o.quantity * px, db)
     pos = _position(db, acct.id, o.ticker)
     realized = 0.0
     if o.side == "BUY":
@@ -288,7 +318,10 @@ def account_view(db: Session, acct: PaperAccount, live: bool = True) -> dict:
         stats = perf_stats(s.pct_change().dropna())
     return {"account": {"id": acct.id, "name": acct.name, "currency": acct.currency, "cash": acct.cash,
                         "initial_cash": acct.initial_cash, "is_system": acct.is_system, "strategy": acct.strategy,
-                        "commission_per_share": acct.commission_per_share, "min_commission": acct.min_commission},
+                        "commission_per_share": acct.commission_per_share, "min_commission": acct.min_commission,
+                        "fee_model": acct.fee_model, "commission_pct": acct.commission_pct, "fee_profile": acct.fee_profile,
+                        "free_trades_per_month": acct.free_trades_per_month, "fx_fee_pct": acct.fx_fee_pct,
+                        "trades_this_month": trades_this_month(db, acct)},
             "equity": equity, "market_value": mv, "total_return": equity / acct.initial_cash - 1,
             "positions": rows, "n_trades": len(trades),
             "closed_trades": len(closed), "win_rate": len(wins) / len(closed) if closed else None,

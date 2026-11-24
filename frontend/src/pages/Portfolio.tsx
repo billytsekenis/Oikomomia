@@ -37,6 +37,7 @@ export default function Portfolio() {
           <button className="btn" onClick={() => { const n = prompt("New portfolio name"); if (n) create.mutate({ name: n, base_currency: "EUR" }); }}>New</button>
         </div>
       </div>
+      {pid && <RevolutImport pid={pid} base={B} onDone={refresh} />}
       {pid && <TxnForm pid={pid} base={B} onDone={refresh} />}
       {an.isLoading && <Card><Loading rows={8} /></Card>}
       {an.error && <ErrorBox error={an.error} />}
@@ -45,12 +46,14 @@ export default function Portfolio() {
       {s && !an.data.empty && (
         <>
           {an.data.warnings?.map((w: string) => <Note key={w} tone="warn">{w}</Note>)}
-          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
             {[
               ["Market value", ccy(s.market_value, B)], ["Cost basis", ccy(s.cost_basis, B)],
               ["Unrealized P&L", <span className={signClass(s.unrealized_pnl)}>{ccy(s.unrealized_pnl, B)}</span>],
               ["of which price", ccy(s.unrealized_price_effect, B)], ["of which FX", ccy(s.unrealized_fx_effect, B)],
-              ["Realized P&L", <span className={signClass(s.realized_pnl)}>{ccy(s.realized_pnl, B)}</span>], ["Fees paid", ccy(s.fees_paid, B)],
+              ["Realized P&L", <span className={signClass(s.realized_pnl)}>{ccy(s.realized_pnl, B)}</span>], ["Trading fees", ccy(s.fees_paid, B)],
+              ["Dividends", ccy(an.data.income?.dividends, B)], ["Other fees", ccy(an.data.income?.other_fees, B)],
+              ["Total P&L", <span className={signClass(an.data.income?.total_pnl)}>{ccy(an.data.income?.total_pnl, B)}</span>],
               ["EUR/USD (ECB)", `${num(an.data.fx?.eurusd, 4)}`],
             ].map(([l, v]: any) => <div key={l} className="card p-3"><Stat label={l} value={v} /></div>)}
           </div>
@@ -123,7 +126,7 @@ export default function Portfolio() {
           <div className="overflow-x-auto scrollbar-thin"><table className="w-full">
             <thead><tr>{["Date", "Side", "Ticker", "Qty", "Price", "Ccy", "Fee", "FX (base/ccy)", "FX source", ""].map((h) => <th key={h} className="th">{h}</th>)}</tr></thead>
             <tbody>{[...txns.data].reverse().map((t: any) => (
-              <tr key={t.id} className="border-t border-line"><td className="td">{t.trade_date}</td><td className="td"><Badge tone={t.side === "BUY" ? "up" : "down"}>{t.side}</Badge></td><td className="td font-medium">{t.ticker}</td>
+              <tr key={t.id} className="border-t border-line"><td className="td">{t.trade_date}</td><td className="td"><Badge tone={t.side === "BUY" ? "up" : t.side === "SELL" ? "down" : "accent"}>{t.side}</Badge>{t.source === "revolut-csv" && <span className="ml-1 text-[10px] text-muted">Revolut</span>}</td><td className="td font-medium">{t.ticker}</td>
                 <td className="td">{t.quantity}</td><td className="td">{num(t.price)}</td><td className="td">{t.currency}</td><td className="td">{num(t.fee)} {t.fee_currency}</td><td className="td">{num(t.fx_rate, 5)}</td><td className="td text-[11px] text-muted max-w-[200px] truncate">{t.fx_source}</td>
                 <td className="td"><button aria-label="Delete transaction" onClick={async () => { if (confirm("Delete transaction?")) { await api(`/portfolios/${pid}/transactions/${t.id}`, { method: "DELETE" }); refresh(); } }}><Trash2 size={14} className="text-muted hover:text-down" /></button></td></tr>
             ))}</tbody></table></div>
@@ -226,3 +229,74 @@ function WhatIf({ pid, base, counterfactual }: { pid: number; base: string; coun
 }
 
 const _unused = isNum;
+
+function RevolutImport({ pid, base, onDone }: { pid: number; base: string; onDone: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [open, setOpen] = useState(false);
+  const preview = useMutation({ mutationFn: (csv: string) => api(`/portfolios/${pid}/import/revolut`, { body: { csv, commit: false } }) });
+  const commit = useMutation({ mutationFn: () => api(`/portfolios/${pid}/import/revolut`, { body: { csv: text, commit: true } }), onSuccess: () => { onDone(); preview.reset(); setText(null); setName(""); } });
+  const onFile = (f?: File | null) => {
+    if (!f) return;
+    if (f.size > 5_000_000) { alert("File too large (max 5 MB)"); return; }
+    setName(f.name);
+    const r = new FileReader();
+    r.onload = () => { const t = String(r.result || ""); setText(t); commit.reset(); preview.mutate(t); };
+    r.readAsText(f);
+  };
+  const tone: Record<string, "up" | "neutral" | "down" | "warn"> = { new: "up", duplicate: "neutral", skipped: "warn", error: "down" };
+  return (
+    <Card title="Import from Revolut" sub="Upload the stocks account statement (CSV). Nothing is saved until you confirm the preview."
+          right={<button className="text-xs text-accent" onClick={() => setOpen(!open)}>{open ? "Hide help" : "How?"}</button>}>
+      {open && (
+        <ol className="list-decimal pl-5 text-xs text-muted space-y-1 mb-3">
+          <li>In the Revolut app open <b>Invest</b> (stocks), then <b>More / ⋯ → Documents → Stocks → Account statement</b> (menu names can differ slightly between app versions).</li>
+          <li>Choose the full period and the <b>CSV</b> (Excel) format, then save the file to the iPhone <b>Files</b> app.</li>
+          <li>Tap <b>Choose file</b> below and pick it. Review the preview, then tap <b>Import</b>.</li>
+          <li>Re-importing a newer statement later is safe: rows already imported are recognised as duplicates.</li>
+        </ol>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="btn cursor-pointer">Choose file<input type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} /></label>
+        <span className="text-xs text-muted truncate max-w-[220px]">{name}</span>
+        {preview.isPending && <span className="text-xs text-muted">Reading…</span>}
+      </div>
+      {preview.error && <div className="mt-2"><ErrorBox error={preview.error} title="Could not read this file" /></div>}
+      {preview.data && !commit.isSuccess && (
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-wrap gap-2 text-xs">
+            {Object.entries(preview.data.counts).map(([k, v]: any) => <Badge key={k} tone={tone[k]}>{v} {k}</Badge>)}
+          </div>
+          <div className="max-h-80 overflow-auto scrollbar-thin border border-line rounded-lg divide-y divide-line">
+            {preview.data.rows.map((r: any) => (
+              <div key={r.line} className="px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 truncate">
+                    <span className="text-muted text-xs mr-2">{r.date}</span>
+                    <b>{r.ticker || ""}</b> <span className="text-xs text-muted">{r.type}</span>
+                  </div>
+                  <Badge tone={tone[r.status]}>{r.status}</Badge>
+                </div>
+                {r.status !== "skipped" && (
+                  <div className="text-xs num text-muted mt-0.5">
+                    {r.kind === "DIV" || r.kind === "FEE" ? `${r.kind === "DIV" ? "Dividend" : "Fee"} ${num(r.total)} ${r.currency || ""}`
+                      : r.kind === "SPLIT" ? `Split: ${r.quantity > 0 ? "+" : ""}${r.quantity} shares`
+                      : `${r.quantity} × ${num(r.price)} ${r.currency || ""}${r.fee ? ` · fee ${num(r.fee)}` : ""}`}
+                    {r.fx_rate && r.currency !== base ? ` · FX ${num(r.fx_rate, 5)} ${base}/${r.currency}` : ""}
+                  </div>
+                )}
+                {r.issues?.length > 0 && <div className="text-[11px] text-muted mt-0.5">{r.issues.join("; ")}</div>}
+              </div>
+            ))}
+          </div>
+          <div className="text-[11px] text-muted">{preview.data.note} Fees are read from the gap between the cash amount and shares × price. FX: the statement rate is used when it matches the ECB fixing (either direction), otherwise the ECB fixing.</div>
+          <button className="btn-primary" disabled={commit.isPending || !preview.data.counts.new} onClick={() => commit.mutate()}>
+            {commit.isPending ? "Importing…" : `Import ${preview.data.counts.new} transaction(s)`}
+          </button>
+        </div>
+      )}
+      {commit.isSuccess && <div className="mt-2 text-sm text-up">Imported {commit.data.imported} transaction(s).</div>}
+      {commit.error && <div className="mt-2"><ErrorBox error={commit.error} /></div>}
+    </Card>
+  );
+}

@@ -32,8 +32,8 @@ class PortfolioIn(BaseModel):
 class TxnIn(BaseModel):
     ticker: str
     side: str
-    quantity: float = Field(gt=0)
-    price: float = Field(gt=0)
+    quantity: float
+    price: float = Field(ge=0)
     currency: str = "USD"
     fee: float = Field(default=0.0, ge=0)
     fee_currency: str | None = None
@@ -44,6 +44,11 @@ class TxnIn(BaseModel):
 
 class WhatIf(BaseModel):
     trades: list[dict]
+
+
+class ImportIn(BaseModel):
+    csv: str = Field(max_length=5_000_000)
+    commit: bool = False
 
 
 def _own(db: Session, pid: int, user: User) -> Portfolio:
@@ -63,6 +68,7 @@ def eurusd_history(start: date) -> pd.Series:
 
 def _txn_dict(t: Transaction) -> dict:
     return {"id": t.id, "ticker": t.ticker, "side": t.side, "quantity": t.quantity, "price": t.price, "currency": t.currency,
+            "source": t.source,
             "fee": t.fee, "fee_currency": t.fee_currency, "fx_rate": t.fx_rate, "fx_source": t.fx_source,
             "trade_date": t.trade_date.isoformat(), "note": t.note}
 
@@ -110,16 +116,22 @@ def list_txns(pid: int, user: User = Depends(get_current_user), db: Session = De
 def add_txn(pid: int, body: TxnIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     pf = _own(db, pid, user)
     side = body.side.upper()
-    if side not in ("BUY", "SELL"):
-        raise HTTPException(400, "side must be BUY or SELL")
+    if side not in ("BUY", "SELL", "DIV", "FEE", "SPLIT"):
+        raise HTTPException(400, "side must be BUY, SELL, DIV, FEE or SPLIT")
     if body.currency not in ("USD", "EUR"):
         raise HTTPException(400, "currency must be USD or EUR")
     if body.trade_date > date.today():
         raise HTTPException(400, "trade date cannot be in the future")
     t = body.ticker.upper().strip()
+    if side != "SPLIT" and body.quantity <= 0:
+        raise HTTPException(400, "quantity must be positive")
+    if side in ("BUY", "SELL") and body.price <= 0:
+        raise HTTPException(400, "price must be positive")
+    if side == "SPLIT" and body.quantity == 0:
+        raise HTTPException(400, "split quantity = change in number of shares (non-zero)")
     if side == "SELL":
-        held = sum((x.quantity if x.side == "BUY" else -x.quantity) for x in pf.transactions
-                   if x.ticker == t and x.trade_date <= body.trade_date)
+        held = sum((x.quantity if x.side in ("BUY", "SPLIT") else -x.quantity if x.side == "SELL" else 0.0)
+                   for x in pf.transactions if x.ticker == t and x.trade_date <= body.trade_date)
         if body.quantity > held + 1e-9:
             raise HTTPException(400, f"Cannot sell {body.quantity} {t}: only {held:g} held on {body.trade_date}")
     fx_rate, fx_src = body.fx_rate, "user supplied" if body.fx_rate else ""
@@ -154,9 +166,29 @@ def delete_txn(pid: int, tid: int, user: User = Depends(get_current_user), db: S
     return {"ok": True}
 
 
+def _price_sanity(txns: list[dict], bars: dict) -> list[str]:
+    """Flag trades whose price is far from that day's (split-adjusted) market range - usually an
+    unrecorded stock split, a wrong currency or a typo."""
+    out = []
+    for t in txns:
+        if t["side"] not in ("BUY", "SELL") or t["ticker"] not in bars or t.get("currency", "USD") != "USD":
+            continue
+        df = bars[t["ticker"]]
+        d = date.fromisoformat(str(t["trade_date"]))
+        s = df[df.index <= d]
+        if s.empty or (d - s.index[-1]).days > 5:
+            continue
+        lo, hi = float(s["low"].iloc[-1]), float(s["high"].iloc[-1])
+        p = float(t["price"])
+        if p < lo * 0.8 or p > hi * 1.25:
+            out.append(f"{t['trade_date']} {t['ticker']} {t['side']} at {p:g} is outside that day's range "
+                       f"{lo:.2f}-{hi:.2f} (split-adjusted). Missing stock split, wrong currency or typo?")
+    return out
+
+
 def compute_analytics(db: Session, pf: Portfolio, custom_shock: tuple[str, float] | None = None,
                       extra_trades: list[dict] | None = None) -> dict:
-    txns = [_txn_dict(t) for t in pf.transactions] + list(extra_trades or [])
+    txns, split_notes = pfa.normalize_splits([_txn_dict(t) for t in pf.transactions] + list(extra_trades or []))
     base = pf.base_currency
     if not txns:
         return {"empty": True, "base_currency": base, "summary": {"positions": [], "market_value": 0}}
@@ -167,11 +199,12 @@ def compute_analytics(db: Session, pf: Portfolio, custom_shock: tuple[str, float
         fx_date = str(eurusd.index[-1])
     except ProviderError:
         eurusd, fx_now, fx_date = None, None, None
-    tickers = sorted({t["ticker"] for t in txns})
+    tickers = sorted({t["ticker"] for t in txns if t["side"] in pfa.TRADE_SIDES})
     needed = set(tickers) | {pf.benchmark, "SPY", "QQQ", "TLT"}
     bars = market.bars_many(sorted(needed))
     missing = [t for t in tickers if t not in bars]
     lots, warnings = pfa.build_lots(txns, base, eurusd)
+    warnings = split_notes + warnings + _price_sanity(txns, bars)
     prices, prev = {}, {}
     for t in tickers:
         try:
@@ -183,7 +216,7 @@ def compute_analytics(db: Session, pf: Portfolio, custom_shock: tuple[str, float
     if fx_now is None and any(t.get("currency", "USD") != base for t in txns):
         return {"error": "FX rates unavailable; cannot value cross-currency portfolio", "base_currency": base}
     summary = pfa.positions_view(lots, prices, base, fx_now or 1.0, prev)
-    currencies = {t["ticker"]: t.get("currency", "USD") for t in txns}
+    currencies = {t["ticker"]: t.get("currency", "USD") for t in txns if t["side"] in pfa.TRADE_SIDES}
     held_bars = {t: bars[t] for t in tickers if t in bars}
     tw = pfa.twr_series(txns, held_bars, base, eurusd)
     ctx = get_market_context()
@@ -246,6 +279,8 @@ def compute_analytics(db: Session, pf: Portfolio, custom_shock: tuple[str, float
             "performance": perf, "benchmark": pf.benchmark, "benchmark_performance": bench_perf, "series": series,
             "risk": risk, "stress": stress, "custom_shock": custom, "currency_exposure": ccy_exp, "fx_sensitivity": fx_sens,
             "counterfactual": cf, "warnings": warnings + ([f"No price data for {', '.join(missing)}"] if missing else []),
+            "income": {"dividends": summary["dividends_received"], "other_fees": summary["other_fees"],
+                       "total_pnl": summary["unrealized_pnl"] + summary["realized_pnl"] + summary["dividends_received"] - summary["other_fees"]},
             "notes": ["Average-cost accounting; fees capitalised on buys and deducted on sells.",
                       "P&L split into price effect (at purchase FX) and FX effect.",
                       "Performance is time-weighted, dividend-adjusted where the data source provides dividends."]}
@@ -286,3 +321,74 @@ def whatif(pid: int, body: WhatIf, user: User = Depends(get_current_user), db: S
     return clean({"before": pick(before), "after": pick(after), "trades": extra,
                   "flags_after": (after.get("risk") or {}).get("flags"),
                   "note": "Hypothetical trades at current quotes, no fees; risk measured on 1-year history of the resulting weights."})
+
+
+@router.post("/{pid}/import/revolut")
+def import_revolut(pid: int, body: ImportIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Preview (commit=false) or import (commit=true) a Revolut stocks account statement CSV."""
+    from ..data import revolut
+    pf = _own(db, pid, user)
+    rows, info = revolut.parse_csv(body.csv)
+    if info.get("error"):
+        raise HTTPException(400, info["error"])
+    dates = [r.trade_date for r in rows if r.trade_date]
+    eurusd = None
+    if dates and any((r.currency or pf.base_currency) != pf.base_currency for r in rows):
+        try:
+            eurusd = eurusd_history(min(dates))
+        except ProviderError:
+            eurusd = None
+    existing = {(t.ticker, t.side, t.trade_date, round(t.quantity, 6), round(t.price, 4)) for t in pf.transactions}
+    held: dict[str, float] = {}
+    for t in pf.transactions:
+        held[t.ticker] = held.get(t.ticker, 0.0) + (t.quantity if t.side in ("BUY", "SPLIT") else -t.quantity if t.side == "SELL" else 0.0)
+    preview, to_add = [], []
+    for r in sorted(rows, key=lambda x: (x.trade_date or date.min, x.line)):
+        item = {"line": r.line, "type": r.raw_type, "kind": r.kind, "ticker": r.ticker, "date": r.trade_date,
+                "quantity": r.quantity, "price": r.price, "total": r.total, "currency": r.currency, "fee": r.fee,
+                "issues": list(r.issues)}
+        if r.kind == "SKIP":
+            preview.append(item | {"status": "skipped"})
+            continue
+        if not r.ok():
+            preview.append(item | {"status": "error"})
+            continue
+        fx_rate, fx_src = 1.0, "same currency"
+        if r.currency != pf.base_currency:
+            ecb = fx.rate_on(eurusd, r.trade_date) if eurusd is not None else None
+            stmt, note = revolut.resolve_fx(r.fx_raw, ecb)
+            rate = stmt or ecb
+            if rate is None:
+                item["issues"].append("ERROR: no FX rate available for this date")
+                preview.append(item | {"status": "error"})
+                continue
+            fx_rate = pfa.fx_to_base(r.currency, pf.base_currency, rate)
+            fx_src = note if stmt else f"ECB fixing on/before {r.trade_date}" + (f" ({note})" if r.fx_raw else "")
+        if r.kind in ("BUY", "SELL"):
+            rec = dict(ticker=r.ticker, side=r.kind, quantity=r.quantity, price=r.price, fee=r.fee, fee_currency=r.currency)
+        elif r.kind == "SPLIT":
+            rec = dict(ticker=r.ticker, side="SPLIT", quantity=r.quantity, price=0.0, fee=0.0, fee_currency=r.currency)
+        else:  # DIV / FEE: amount stored as quantity 1 x price
+            rec = dict(ticker=r.ticker or "ACCOUNT", side=r.kind, quantity=1.0, price=r.total, fee=0.0, fee_currency=r.currency)
+        key = (rec["ticker"], rec["side"], r.trade_date, round(rec["quantity"], 6), round(rec["price"], 4))
+        if key in existing:
+            preview.append(item | {"status": "duplicate", "fx_rate": fx_rate, "fx_source": fx_src})
+            continue
+        if rec["side"] == "SELL" and rec["quantity"] > held.get(rec["ticker"], 0.0) + 1e-6:
+            item["issues"].append(f"ERROR: sells {rec['quantity']:g} but only {held.get(rec['ticker'], 0.0):g} held "
+                                  "(earlier buys missing from this statement?)")
+            preview.append(item | {"status": "error"})
+            continue
+        if rec["side"] in ("BUY", "SELL", "SPLIT"):
+            held[rec["ticker"]] = held.get(rec["ticker"], 0.0) + (rec["quantity"] if rec["side"] != "SELL" else -rec["quantity"])
+        existing.add(key)
+        to_add.append(Transaction(portfolio_id=pf.id, currency=r.currency, fx_rate=fx_rate, fx_source=fx_src[:60],
+                                  trade_date=r.trade_date, note=f"Revolut: {r.raw_type}"[:500], source="revolut-csv", **rec))
+        preview.append(item | {"status": "new", "fx_rate": fx_rate, "fx_source": fx_src})
+    counts = {k: sum(1 for p in preview if p["status"] == k) for k in ("new", "duplicate", "skipped", "error")}
+    if body.commit and to_add:
+        db.add_all(to_add)
+        db.commit()
+    return clean({"committed": bool(body.commit and to_add), "imported": len(to_add) if body.commit else 0,
+                  "counts": counts, "rows": preview, "columns_found": info["columns_found"],
+                  "note": "Cash top-ups/withdrawals are skipped: the portfolio tracks securities, not the cash balance."})

@@ -38,6 +38,8 @@ class Lot:
     realized_fx: float = 0.0
     realized_fees: float = 0.0
     currency: str = "USD"
+    dividends: float = 0.0
+    other_fees: float = 0.0
     trades: list = field(default_factory=list)
 
     @property
@@ -60,6 +62,36 @@ def fx_to_base(ccy: str, base: str, eurusd: float) -> float:
     raise ValueError(f"unsupported currency pair {ccy}->{base}")
 
 
+TRADE_SIDES = ("BUY", "SELL")
+
+
+def normalize_splits(txns: list[dict]) -> tuple[list[dict], list[str]]:
+    """Apply recorded stock splits retroactively so every trade is expressed on today's
+    split-adjusted share basis (the basis of the price data). A SPLIT row carries the change in
+    share count; ratio = (held_before + change) / held_before. Earlier trades of that ticker get
+    quantity x ratio and price / ratio (cost is unchanged). SPLIT rows are then dropped."""
+    rows = sorted([dict(t) for t in txns], key=lambda x: (str(x["trade_date"]), x.get("id", 0)))
+    notes = []
+    for i, t in enumerate(rows):
+        if t["side"] != "SPLIT":
+            continue
+        held = sum((r["quantity"] if r["side"] == "BUY" else -r["quantity"]) for r in rows[:i]
+                   if r["ticker"] == t["ticker"] and r["side"] in TRADE_SIDES)
+        if held <= 1e-9:
+            notes.append(f"{t['trade_date']} {t['ticker']}: split ignored (no shares held before it)")
+            continue
+        ratio = (held + float(t["quantity"])) / held
+        if ratio <= 0:
+            notes.append(f"{t['trade_date']} {t['ticker']}: split ignored (invalid share change)")
+            continue
+        for r in rows[:i]:
+            if r["ticker"] == t["ticker"] and r["side"] in TRADE_SIDES:
+                r["quantity"] = float(r["quantity"]) * ratio
+                r["price"] = float(r["price"]) / ratio
+        notes.append(f"{t['trade_date']} {t['ticker']}: split ratio {ratio:g} applied to earlier trades")
+    return [r for r in rows if r["side"] != "SPLIT"], notes
+
+
 def build_lots(txns: list[dict], base: str, eurusd_hist: pd.Series | None) -> tuple[dict[str, Lot], list[str]]:
     """txns: dicts with ticker, side, quantity, price, currency, fee, fee_currency, fx_rate, trade_date."""
     lots: dict[str, Lot] = defaultdict(Lot)
@@ -73,6 +105,14 @@ def build_lots(txns: list[dict], base: str, eurusd_hist: pd.Series | None) -> tu
         Xfee = _fx_on(t.get("fee_currency", base), base, t["trade_date"], eurusd_hist) if t.get("fee") else 1.0
         fee_b = float(t.get("fee") or 0) * Xfee
         q, P = float(t["quantity"]), float(t["price"])
+        if t["side"] == "DIV":  # cash dividend received: quantity 1 x price = amount (instrument ccy)
+            lot.dividends += q * P * X
+            lot.trades.append(t)
+            continue
+        if t["side"] == "FEE":  # standalone fee (custody, tax withheld, ...)
+            lot.other_fees += q * P * X
+            lot.trades.append(t)
+            continue
         if t["side"] == "BUY":
             lot.qty += q
             lot.cost_instr += q * P
@@ -148,7 +188,9 @@ def positions_view(lots: dict[str, Lot], prices: dict[str, float], base: str, eu
             "unrealized_price_effect": sum(r["unrealized_price_effect"] for r in rows),
             "unrealized_fx_effect": sum(r["unrealized_fx_effect"] for r in rows),
             "realized_pnl": sum(v["total"] for v in realized.values()), "realized_by_ticker": realized,
-            "fees_paid": sum(l.realized_fees + l.fees_base for l in lots.values())}
+            "fees_paid": sum(l.realized_fees + l.fees_base for l in lots.values()),
+            "dividends_received": sum(l.dividends for l in lots.values()),
+            "other_fees": sum(l.other_fees for l in lots.values())}
 
 
 def base_returns(bars: dict[str, pd.DataFrame], currencies: dict[str, str], base: str,
@@ -170,6 +212,7 @@ def base_returns(bars: dict[str, pd.DataFrame], currencies: dict[str, str], base
 
 def twr_series(txns: list[dict], bars: dict[str, pd.DataFrame], base: str, eurusd_hist: pd.Series | None) -> pd.DataFrame:
     """Daily holdings-weighted TWR in base currency, plus value series (close-based)."""
+    txns = [t for t in txns if t["side"] in TRADE_SIDES]
     if not txns:
         return pd.DataFrame()
     start = min(date.fromisoformat(str(t["trade_date"])) for t in txns)
@@ -362,7 +405,7 @@ def counterfactual_benchmark(txns: list[dict], bench: pd.DataFrame, base: str, e
     Same dates and base-currency amounts; fees replicated."""
     fake = []
     c = bench["close"]
-    for t in txns:
+    for t in [x for x in txns if x["side"] in TRADE_SIDES]:
         d = date.fromisoformat(str(t["trade_date"]))
         s = c[c.index <= d]
         if s.empty:

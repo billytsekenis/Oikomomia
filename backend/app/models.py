@@ -145,7 +145,7 @@ class Transaction(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id", ondelete="CASCADE"), index=True)
     ticker: Mapped[str] = mapped_column(String(20))
-    side: Mapped[str] = mapped_column(String(4))  # BUY / SELL
+    side: Mapped[str] = mapped_column(String(8))  # BUY / SELL / DIV / FEE / SPLIT
     quantity: Mapped[float] = mapped_column(Float)
     price: Mapped[float] = mapped_column(Float)  # in instrument currency
     currency: Mapped[str] = mapped_column(String(3), default="USD")
@@ -156,6 +156,7 @@ class Transaction(Base):
     fx_source: Mapped[str] = mapped_column(String(60), default="")
     trade_date: Mapped[date] = mapped_column(Date)
     note: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(40), default="manual")  # manual / revolut-csv
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -170,6 +171,13 @@ class PaperAccount(Base):
     cash: Mapped[float] = mapped_column(Float, default=100_000.0)
     commission_per_share: Mapped[float] = mapped_column(Float, default=0.005)
     min_commission: Mapped[float] = mapped_column(Float, default=1.0)
+    # fee model: "per_share" (US broker style) or "pct" (Revolut style: % of order, minimum,
+    # monthly commission-free allowance, FX conversion cost on the order amount)
+    fee_model: Mapped[str] = mapped_column(String(12), default="per_share")
+    commission_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    free_trades_per_month: Mapped[int] = mapped_column(Integer, default=0)
+    fx_fee_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    fee_profile: Mapped[str] = mapped_column(String(60), default="")
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     strategy: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -4,7 +4,7 @@ Status legend: **Tested** = implemented and verified by automated tests and/or t
 **Implemented** = works in the running app, verified manually or by API smoke tests, no dedicated automated test ·
 **Partial** = works with a stated limitation · **Blocked** = not possible in this environment (reason given).
 
-Evidence: `backend/tests` (81 pytest tests, offline), `e2e/flows.js` (22 Playwright journeys, desktop + iPhone 13, real
+Evidence: `backend/tests` (89 pytest tests, offline), `e2e/flows.js` (22 Playwright journeys, desktop + iPhone 13, real
 data, cold start: **22/22 passed**), `e2e/mobile_overflow.js` (10/10 pages without horizontal overflow at 390 px),
 screenshots in `docs/screenshots/`. All numbers below are from real data fetched on 2026-11-23.
 
@@ -76,6 +76,12 @@ screenshots in `docs/screenshots/`. All numbers below are from real data fetched
 | Benchmark comparison | Implemented | TWR vs benchmark, plus counterfactual "same flows into SPY". |
 | Decision simulation | Tested | What-if endpoint; e2e "portfolio analytics + what-if". |
 | USD & EUR, fees, FX differences | Tested | ECB trade-date fixings; exact price/FX P&L decomposition test. |
+
+### Revolut (added after delivery)
+| Requirement | Status | Evidence / notes |
+|---|---|---|
+| Import Revolut stocks statement (CSV) incl. dividends, fees, splits, FX | Tested | `test_revolut.py` (parser, FX direction, splits, dedupe, API preview/commit); `e2e/revolut.js` on an emulated iPhone: 7 imported, 2 cash rows skipped, NVDA 10 shares after a 10:1 split. **Partial caveat:** the CSV layout is not officially documented; fixtures follow the commonly seen layout and must be confirmed with a real export. |
+| Revolut fee model for paper trading | Tested | Allowance → max(0.25%, €1) test; presets per plan; FX fee is a user setting (not publicly confirmed). |
 
 ## 8. Backtesting Engine
 | Requirement | Status | Evidence / notes |

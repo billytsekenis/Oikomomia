@@ -1,5 +1,26 @@
 # Oikonomia Terminal
 
+> 🇬🇷 **Οδηγός για iPhone — χωρίς εγκατάσταση.** Η εφαρμογή τρέχει στο cloud και την ανοίγετε από το Safari.
+>
+> 1. Ανοίξτε στο Safari: **<https://render.com/deploy?repo=https://github.com/billytsekenis/oikomomia>**
+>    και συνδεθείτε με τον λογαριασμό σας στο GitHub (το Render ζητά πρόσβαση στο repository).
+> 2. Αν σας ζητηθεί branch, επιλέξτε `claude/stock-market-intelligence-platform-7h73vi`.
+> 3. Συμπληρώστε το **SEC_USER_AGENT** με «Όνομα email» (το απαιτεί η SEC). Τα `ANTHROPIC_API_KEY` και
+>    `FRED_API_KEY` είναι προαιρετικά.
+> 4. Πατήστε **Apply / Deploy**. Μετά από ~5-10 λεπτά ανοίγετε τη διεύθυνση `….onrender.com` στο Safari.
+> 5. Δημιουργήστε λογαριασμό. Στη συνέχεια, στο Render → Environment, ορίστε `ALLOW_REGISTRATION=false`,
+>    ώστε να μη μπορεί να εγγραφεί κανείς άλλος.
+> 6. **Revolut:** Portfolio → *Import from Revolut* → επιλέξτε το CSV του Account statement από τα Αρχεία (Files).
+>    Πριν αποθηκευτεί οτιδήποτε, βλέπετε προεπισκόπηση.
+>
+> Κόστος: χρειάζεται λογαριασμός Render. Το `render.yaml` ζητά πλάνο 1 CPU / 2 GB με δίσκο 1 GB, που είναι πληρωμένο
+> (δείτε την τιμή στο render.com/pricing πριν το επιβεβαιώσετε). Το δωρεάν πλάνο (512 MB) δεν αρκεί για την εκπαίδευση
+> του μοντέλου.
+>
+> Το «Add to Home Screen» στο Safari είναι **προαιρετικό**: απλώς προσθέτει ένα εικονίδιο συντόμευσης και δεν
+> εγκαθιστά τίποτα.
+
+
 A personal stock-market intelligence terminal: market dashboard, multi-factor stock discovery, per-stock deep analysis,
 a probabilistic prediction engine that is **validated out-of-sample**, an evidence-bound AI analyst, portfolio
 intelligence (EUR/USD), paper trading, alerts and a live prediction track record.
@@ -34,9 +55,10 @@ On first start the server downloads ~10 years of prices for ~125 symbols plus SE
 walk-forward-validates the model. This takes about 3-5 min on a normal CPU (longer on the smallest plans). The dashboard
 works immediately; the Discover and Forecast ML components appear when training finishes (see *Data & System → Background jobs*).
 
-**Plans.** `render.yaml` uses the *standard* plan (2 GB RAM) with a 1 GB persistent disk, so SQLite and model artefacts
-survive restarts. Training was measured at a ~450 MB peak, which is too close to the 512 MB *starter* limit. For *starter*,
-set `TRAIN_MAX_TICKERS=50`.
+**Plans.** `render.yaml` uses the `1c-2g` plan (1 CPU / 2 GB RAM; Render renamed its plans in August 2026, and this was
+formerly called "standard") with a 1 GB persistent disk, so SQLite and model artefacts survive restarts. Training was
+measured at a ~450 MB peak, which is too close to the 512 MB limit of the smallest plans. On those plans, set
+`TRAIN_MAX_TICKERS=50`.
 The *free* plan also works, but it has no persistent disk and sleeps after 15 minutes idle. In that case, attach a free
 PostgreSQL database (e.g. Neon or Supabase) by setting `DATABASE_URL=postgresql://…` and removing the `disk:` block. The
 jobs are catch-up jobs, so a sleeping host simply catches up when it wakes.
@@ -61,7 +83,7 @@ cd frontend && npm run build
 Demo mode without any network access: `DEMO_MODE=true uvicorn app.main:app` (every value is synthetic and labelled, and a
 banner is shown on every page).
 
-Tests: `cd backend && python -m pytest -q` (81 tests, offline).
+Tests: `cd backend && python -m pytest -q` (89 tests, offline).
 
 ## Configuration (environment variables)
 
@@ -94,7 +116,7 @@ frontend/ (React 18 + TypeScript + Vite + Tailwind)          backend/ (Python 3.
                                                                                 tracking, market_hours
            ── REST /api/* + WebSocket /ws ──►                    app/analyst/    deterministic engine, guard, optional LLM
                                                                  app/api/        routers;  app/jobs.py  APScheduler
-                                                                 alembic/        migrations;  tests/  81 tests
+                                                                 alembic/        migrations;  tests/  89 tests
 ```
 
 Design decisions:
@@ -184,6 +206,25 @@ direction, interval coverage, Brier score and error. Failures are never removed.
 - Stress tests: historical windows (2018 Q4, 2020, 2022, 2024, 2025) and factor shocks with 90% bands.
 - Scenarios: a what-if simulator, and a counterfactual "same cash flows into the benchmark".
 
+**Revolut support**:
+- **Statement import** (Portfolio → *Import from Revolut*): reads the CSV *Account statement* of Revolut stocks
+  (Invest → Documents → Stocks → Account statement → CSV; menu names can vary by app version). It handles buys, sells,
+  dividends, fees and stock splits, and skips cash top-ups/withdrawals. Commissions are read from the gap between the cash
+  amount and shares × price.
+- **FX**: the statement FX value is used when it matches the ECB fixing of that day in either direction; otherwise the
+  ECB fixing is used.
+- **Safety**: duplicates are detected, so re-importing a newer statement is safe. Oversells are rejected, and nothing is
+  saved before the preview is confirmed.
+- **Format caveat**: Revolut does not publish the CSV layout, so the parser finds columns by name and tolerates variants
+  (comma or semicolon, decimal comma, "USD 12.30" amounts). Its fixtures follow the commonly seen layout and have not been
+  checked against an official specification. Unrecognised rows are reported with a reason, never guessed.
+- **Splits**: a recorded split rescales earlier trades to today's split-adjusted share basis. Trades whose price is far
+  outside that day's market range are flagged (usually an unrecorded split, wrong currency or typo).
+- **Revolut fee presets for paper trading**: Standard / Plus / Premium / Metal / Ultra. Outside the monthly free
+  allowance (1/3/5/10/10 orders) the fee is the greater of 0.25% (0.12% Ultra) and about €1, per Revolut's EEA
+  disclosures as found in Nov 2026. FX conversion cost is a user setting, because it depends on plan and day. Fees vary
+  by country and change over time: check them in the Revolut app.
+
 **Paper trading** (`paper.py`):
 - Order types: market, limit, stop and stop-limit; DAY/GTC; bracket stop-loss/take-profit as an OCO pair.
 - Market hours: the NYSE calendar, including holidays and early closes.
@@ -239,7 +280,7 @@ whenever the model is retrained (weekly), and the live track record accumulates 
 ```
 backend/app/        FastAPI app (data, analytics, analyst, api, jobs)
 backend/alembic/    database migrations (applied automatically at start-up)
-backend/tests/      pytest suite, 81 tests (calculations, leakage, paper engine, backtest, tracking, API, adversarial evals)
+backend/tests/      pytest suite, 89 tests (calculations, leakage, paper engine, backtest, tracking, API, adversarial evals)
 frontend/           React/TypeScript SPA (built into backend/static)
 Dockerfile          multi-stage build (Node -> Python)
 render.yaml         one-tap Render Blueprint

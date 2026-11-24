@@ -18,6 +18,7 @@ export default function Paper() {
   const orders = useQuery({ queryKey: ["paper-orders", aid], queryFn: () => api(`/paper/accounts/${aid}/orders`), enabled: !!aid, refetchInterval: 30_000 });
   const trades = useQuery({ queryKey: ["paper-trades", aid], queryFn: () => api(`/paper/accounts/${aid}/trades`), enabled: !!aid });
   const [tab, setTab] = useState<"positions" | "orders" | "history">("positions");
+  const [showNew, setShowNew] = useState(false);
   const refresh = () => ["paper", "paper-orders", "paper-trades", "paper-accts"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   const newAcct = useMutation({ mutationFn: (b: any) => api("/paper/accounts", { body: b }), onSuccess: (r) => { refresh(); setAid(r.id); } });
   const cancel = useMutation({ mutationFn: (oid: number) => api(`/paper/accounts/${aid}/orders/${oid}/cancel`, { method: "POST" }), onSuccess: refresh });
@@ -34,9 +35,18 @@ export default function Paper() {
           <select className="input py-1.5 w-auto" value={aid ?? ""} onChange={(e) => setAid(Number(e.target.value))} aria-label="Account">
             {accts.data?.map((a: any) => <option key={a.id} value={a.id}>{a.is_system ? "🤖 " : ""}{a.name}</option>)}
           </select>
-          <button className="btn" onClick={() => { const n = prompt("Account name"); if (n) newAcct.mutate({ name: n, initial_cash: 100000 }); }}>New account</button>
+          <button className="btn" onClick={() => setShowNew(!showNew)}>New account</button>
         </div>
       </div>
+      {showNew && <NewAccount onCreate={(b) => newAcct.mutate(b, { onSuccess: () => setShowNew(false) })} pending={newAcct.isPending} error={newAcct.error} />}
+      {v && !acct?.is_system && (
+        <div className="text-xs text-muted">
+          Fees: <b className="text-fg">{v.account.fee_profile || (v.account.fee_model === "pct" ? "custom %" : "per share")}</b>
+          {v.account.fee_model === "pct"
+            ? <> · {pct(v.account.commission_pct, 2, false)} (min {num(v.account.min_commission)}) after {v.account.free_trades_per_month} free order(s)/month · used this month: {v.account.trades_this_month} · FX fee {pct(v.account.fx_fee_pct, 2, false)}</>
+            : <> · ${num(v.account.commission_per_share, 3)}/share, min ${num(v.account.min_commission)}</>}
+        </div>
+      )}
       {acct?.is_system && <Note>System strategy account (read-only): the platform paper-trades its own rule ({acct.strategy?.rule}) to evaluate itself forward in time.</Note>}
       {v && (
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
@@ -140,6 +150,27 @@ function OrderTicket({ aid, initial, onDone, market }: { aid: number; initial: s
         {msg && <div className={clsx("text-sm", msg.ok ? "text-up" : "text-down")}>{msg.text}</div>}
         <p className="text-[11px] text-muted">Long-only, no margin. Market orders outside regular hours queue for the next open. Stops are not guaranteed: gaps fill at the worse price.</p>
       </form>
+    </Card>
+  );
+}
+
+function NewAccount({ onCreate, pending, error }: { onCreate: (b: any) => void; pending: boolean; error: unknown }) {
+  const pre = useQuery({ queryKey: ["fee-presets"], queryFn: () => api("/paper/fee-presets") });
+  const [f, setF] = useState({ name: "Revolut practice", initial_cash: "10000", preset: "revolut-standard", fx_fee_pct: "0" });
+  const p = pre.data?.presets.find((x: any) => x.id === f.preset);
+  return (
+    <Card title="New paper account">
+      <form className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end" onSubmit={(e) => { e.preventDefault(); onCreate({ name: f.name, initial_cash: Number(f.initial_cash), preset: f.preset, fx_fee_pct: Number(f.fx_fee_pct) / 100 }); }}>
+        <div className="col-span-2 sm:col-span-1"><label className="label">Name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required /></div>
+        <div><label className="label">Starting cash</label><input className="input" type="number" min="1" value={f.initial_cash} onChange={(e) => setF({ ...f, initial_cash: e.target.value })} /></div>
+        <div><label className="label">Fee profile</label>
+          <select className="input" value={f.preset} onChange={(e) => setF({ ...f, preset: e.target.value })}>{pre.data?.presets.map((x: any) => <option key={x.id} value={x.id}>{x.label}</option>)}</select></div>
+        <div><label className="label">FX fee % (EUR→USD)</label><input className="input" type="number" step="0.01" min="0" value={f.fx_fee_pct} onChange={(e) => setF({ ...f, fx_fee_pct: e.target.value })} /></div>
+        <button className="btn-primary justify-center py-2" disabled={pending}>Create</button>
+      </form>
+      {p && <div className="text-xs text-muted mt-2">{p.fee_model === "pct" ? `${pct(p.commission_pct, 2, false)} per order (min ${p.min_commission}) after ${p.free_trades_per_month} free order(s) per month.` : "Per-share commission."}</div>}
+      {pre.data && <div className="mt-2"><Note>{pre.data.note}</Note></div>}
+      {error ? <div className="mt-2"><ErrorBox error={error} /></div> : null}
     </Card>
   );
 }
